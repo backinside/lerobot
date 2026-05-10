@@ -63,7 +63,19 @@ class SOFollowerClientConfig(RobotConfig):
     connect_timeout_s: int = 5
 
 
+@dataclass
+class SOFollowerHostConfig:
+    """Configuration for a remote SO follower host."""
+
+    port_zmq_cmd: int = 5555
+    port_zmq_observations: int = 5556
+    connection_time_s: int = 30
+    max_loop_freq_hz: int = 30
+
+
 SO100FollowerConfig = SOFollowerRobotConfig
 SO101FollowerConfig = SOFollowerRobotConfig
 SO100FollowerClientConfig = SOFollowerClientConfig
 SO101FollowerClientConfig = SOFollowerClientConfig
+SO100FollowerHostConfig = SOFollowerHostConfig
+SO101FollowerHostConfig = SOFollowerHostConfig

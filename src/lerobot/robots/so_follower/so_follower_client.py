@@ -25,7 +25,6 @@ import numpy as np
 from lerobot.types import RobotAction, RobotObservation
 from lerobot.utils.constants import ACTION, OBS_STATE
 from lerobot.utils.decorators import check_if_already_connected, check_if_not_connected
-from lerobot.utils.errors import DeviceNotConnectedError
 
 from ..robot import Robot
 from .config_so_follower import SOFollowerClientConfig
@@ -55,7 +54,7 @@ class SOFollowerClient(Robot):
         self.zmq_observation_socket = None
 
         self.last_frames: dict[str, np.ndarray] = {}
-        self.last_remote_state: RobotObservation = {}
+        self.last_remote_state: RobotObservation = self._make_default_observation()
         self._is_connected = False
 
     @cached_property
@@ -93,6 +92,12 @@ class SOFollowerClient(Robot):
     def is_calibrated(self) -> bool:
         return True
 
+    def _make_default_observation(self) -> RobotObservation:
+        state_vec = np.zeros(len(self._state_order), dtype=np.float32)
+        obs_dict: RobotObservation = {key: 0.0 for key in self._state_order}
+        obs_dict[OBS_STATE] = state_vec
+        return obs_dict
+
     @check_if_already_connected
     def connect(self) -> None:
         zmq = self._zmq
@@ -106,13 +111,14 @@ class SOFollowerClient(Robot):
         self.zmq_observation_socket.connect(f"tcp://{self.remote_ip}:{self.port_zmq_observations}")
         self.zmq_observation_socket.setsockopt(zmq.CONFLATE, 1)
 
-        poller = zmq.Poller()
-        poller.register(self.zmq_observation_socket, zmq.POLLIN)
-        socks = dict(poller.poll(self.connect_timeout_s * 1000))
-        if self.zmq_observation_socket not in socks or socks[self.zmq_observation_socket] != zmq.POLLIN:
-            raise DeviceNotConnectedError("Timeout waiting for remote SO follower host to produce observations.")
-
         self._is_connected = True
+        logging.info(
+            "Connected remote SO follower client to tcp://%s:%s and tcp://%s:%s",
+            self.remote_ip,
+            self.port_zmq_cmd,
+            self.remote_ip,
+            self.port_zmq_observations,
+        )
 
     def calibrate(self) -> None:
         pass
@@ -222,9 +228,12 @@ class SOFollowerClient(Robot):
 
     @check_if_not_connected
     def disconnect(self) -> None:
-        self.zmq_observation_socket.close()
-        self.zmq_cmd_socket.close()
-        self.zmq_context.term()
+        if self.zmq_observation_socket is not None:
+            self.zmq_observation_socket.close()
+        if self.zmq_cmd_socket is not None:
+            self.zmq_cmd_socket.close()
+        if self.zmq_context is not None:
+            self.zmq_context.term()
         self._is_connected = False
 
 

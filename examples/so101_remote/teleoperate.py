@@ -32,7 +32,8 @@ def main():
     robot = SO101FollowerClient(robot_config)
     leader = SO101Leader(leader_config)
 
-    # Start the remote host first on the robot machine.
+    # Start the remote host first on the robot machine:
+    # python -m lerobot.robots.so_follower.so_follower_host --robot.type=so101_follower --robot.port=<FOLLOWER_PORT> --host.connection_time_s=-1
     robot.connect()
     leader.connect()
 
@@ -43,9 +44,9 @@ def main():
         while True:
             t0 = time.perf_counter()
 
-            observation = robot.get_observation()
             action = leader.get_action()
             _ = robot.send_action(action)
+            observation = robot.get_observation()
 
             log_rerun_data(observation=observation, action=action)
 
