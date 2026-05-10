@@ -24,15 +24,17 @@ import cv2
 import draccus
 import zmq
 
+from ..config import RobotConfig
+from ..robot import Robot
+from ..utils import make_robot_from_config
 from .config_so_follower import SOFollowerHostConfig, SOFollowerRobotConfig
-from .so_follower import SOFollower
 
 
 @dataclass
 class SOFollowerServerConfig:
     """Configuration for the SO follower host script."""
 
-    robot: SOFollowerRobotConfig = field(default_factory=lambda: SOFollowerRobotConfig(port="/dev/ttyACM0"))
+    robot: RobotConfig = field(default_factory=lambda: SOFollowerRobotConfig(port="/dev/ttyACM0"))
     host: SOFollowerHostConfig = field(default_factory=SOFollowerHostConfig)
 
 
@@ -71,7 +73,9 @@ def _encode_observation(observation: dict[str, object], camera_names: list[str])
 @draccus.wrap()
 def main(cfg: SOFollowerServerConfig):
     logging.info("Configuring SO follower")
-    robot = SOFollower(cfg.robot)
+    robot = make_robot_from_config(cfg.robot)
+    if not isinstance(robot, Robot):
+        raise TypeError(f"Expected Robot instance, got {type(robot)}")
 
     logging.info("Connecting SO follower")
     robot.connect()
