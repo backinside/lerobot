@@ -42,15 +42,23 @@ class SOFollowerConfig:
     use_degrees: bool = True
 
 
-@RobotConfig.register_subclass("so101_follower")
-@RobotConfig.register_subclass("so100_follower")
 @dataclass
 class SOFollowerRobotConfig(RobotConfig, SOFollowerConfig):
+    """Base config class for local SO follower robots."""
+
+
+@RobotConfig.register_subclass("so100_follower")
+@dataclass
+class SO100FollowerConfig(SOFollowerRobotConfig):
     pass
 
 
-@RobotConfig.register_subclass("so101_follower_client")
-@RobotConfig.register_subclass("so100_follower_client")
+@RobotConfig.register_subclass("so101_follower")
+@dataclass
+class SO101FollowerConfig(SOFollowerRobotConfig):
+    pass
+
+
 @dataclass
 class SOFollowerClientConfig(RobotConfig):
     """Configuration for a remote SO follower client."""
@@ -63,6 +71,18 @@ class SOFollowerClientConfig(RobotConfig):
     connect_timeout_s: int = 5
 
 
+@RobotConfig.register_subclass("so100_follower_client")
+@dataclass
+class SO100FollowerClientConfig(SOFollowerClientConfig):
+    pass
+
+
+@RobotConfig.register_subclass("so101_follower_client")
+@dataclass
+class SO101FollowerClientConfig(SOFollowerClientConfig):
+    pass
+
+
 @dataclass
 class SOFollowerHostConfig:
     """Configuration for a remote SO follower host."""
@@ -72,10 +92,5 @@ class SOFollowerHostConfig:
     connection_time_s: int = 30
     max_loop_freq_hz: int = 30
 
-
-SO100FollowerConfig = SOFollowerRobotConfig
-SO101FollowerConfig = SOFollowerRobotConfig
-SO100FollowerClientConfig = SOFollowerClientConfig
-SO101FollowerClientConfig = SOFollowerClientConfig
 SO100FollowerHostConfig = SOFollowerHostConfig
 SO101FollowerHostConfig = SOFollowerHostConfig
