@@ -16,18 +16,28 @@
 
 from .config_so_follower import (
     SO100FollowerConfig,
+    SO100FollowerClientConfig,
     SO101FollowerConfig,
+    SO101FollowerClientConfig,
+    SOFollowerClientConfig,
     SOFollowerConfig,
     SOFollowerRobotConfig,
 )
 from .so_follower import SO100Follower, SO101Follower, SOFollower
+from .so_follower_client import SO100FollowerClient, SO101FollowerClient, SOFollowerClient
 
 __all__ = [
     "SO100Follower",
     "SO100FollowerConfig",
+    "SO100FollowerClient",
+    "SO100FollowerClientConfig",
     "SO101Follower",
     "SO101FollowerConfig",
+    "SO101FollowerClient",
+    "SO101FollowerClientConfig",
     "SOFollower",
+    "SOFollowerClient",
+    "SOFollowerClientConfig",
     "SOFollowerConfig",
     "SOFollowerRobotConfig",
 ]

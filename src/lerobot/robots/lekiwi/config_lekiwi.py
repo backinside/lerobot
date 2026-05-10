@@ -55,7 +55,7 @@ class LeKiwiHostConfig:
     port_zmq_cmd: int = 5555
     port_zmq_observations: int = 5556
 
-    # Duration of the application
+    # Duration of the application. Set to -1 to run until interrupted.
     connection_time_s: int = 30
 
     # Watchdog: stop the robot if no command is received for over 0.5 seconds.

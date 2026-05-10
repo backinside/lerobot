@@ -14,16 +14,23 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
+import contextlib
 import logging
-import os
 import sys
+import threading
 import time
 from queue import Queue
 from typing import Any
 
+if sys.platform == "win32":
+    import msvcrt
+else:
+    import select
+    import termios
+    import tty
+
 from lerobot.types import RobotAction
 from lerobot.utils.decorators import check_if_already_connected, check_if_not_connected
-from lerobot.utils.import_utils import _pynput_available, require_package
 
 from ..teleoperator import Teleoperator
 from ..utils import TeleopEvents
@@ -33,18 +40,26 @@ from .configuration_keyboard import (
     KeyboardTeleopConfig,
 )
 
-PYNPUT_AVAILABLE = _pynput_available
-keyboard = None
-if PYNPUT_AVAILABLE:
-    try:
-        if ("DISPLAY" not in os.environ) and ("linux" in sys.platform):
-            logging.info("No DISPLAY set. Skipping pynput import.")
-            PYNPUT_AVAILABLE = False
-        else:
-            from pynput import keyboard
-    except Exception as e:
-        PYNPUT_AVAILABLE = False
-        logging.info(f"Could not import pynput: {e}")
+KEY_UP = "up"
+KEY_DOWN = "down"
+KEY_LEFT = "left"
+KEY_RIGHT = "right"
+KEY_SHIFT = "shift"
+KEY_SHIFT_R = "shift_r"
+KEY_CTRL_L = "ctrl_l"
+KEY_CTRL_R = "ctrl_r"
+KEY_ESC = "esc"
+
+ESCAPE_SEQUENCES = {
+    "\x1b[A": KEY_UP,
+    "\x1b[B": KEY_DOWN,
+    "\x1b[D": KEY_LEFT,
+    "\x1b[C": KEY_RIGHT,
+    "\xe0H": KEY_UP,
+    "\xe0P": KEY_DOWN,
+    "\xe0K": KEY_LEFT,
+    "\xe0M": KEY_RIGHT,
+}
 
 
 class KeyboardTeleop(Teleoperator):
@@ -56,15 +71,19 @@ class KeyboardTeleop(Teleoperator):
     name = "keyboard"
 
     def __init__(self, config: KeyboardTeleopConfig):
-        require_package("pynput", extra="pynput-dep")
         super().__init__(config)
         self.config = config
         self.robot_type = config.type
 
         self.event_queue = Queue()
-        self.current_pressed = {}
+        self.current_pressed = set()
         self.listener = None
         self.logs = {}
+        self._reader_thread = None
+        self._stop_event = threading.Event()
+        self._stdin_fd = None
+        self._stdin_attrs = None
+        self._connected = False
 
     @property
     def action_features(self) -> dict:
@@ -80,7 +99,7 @@ class KeyboardTeleop(Teleoperator):
 
     @property
     def is_connected(self) -> bool:
-        return PYNPUT_AVAILABLE and isinstance(self.listener, keyboard.Listener) and self.listener.is_alive()
+        return self._connected and self._reader_thread is not None and self._reader_thread.is_alive()
 
     @property
     def is_calibrated(self) -> bool:
@@ -88,35 +107,104 @@ class KeyboardTeleop(Teleoperator):
 
     @check_if_already_connected
     def connect(self) -> None:
-        if PYNPUT_AVAILABLE:
-            logging.info("pynput is available - enabling local keyboard listener.")
-            self.listener = keyboard.Listener(
-                on_press=self._on_press,
-                on_release=self._on_release,
-            )
-            self.listener.start()
-        else:
-            logging.info("pynput not available - skipping local keyboard listener.")
-            self.listener = None
+        self._configure_stdin()
+        self._stop_event.clear()
+        self._reader_thread = threading.Thread(target=self._read_stdin_loop, daemon=True)
+        self._reader_thread.start()
+        self.listener = self._reader_thread
+        self._connected = True
+        logging.info("stdin keyboard teleop enabled. Terminal set to raw mode.")
 
     def calibrate(self) -> None:
         pass
 
-    def _on_press(self, key):
-        if hasattr(key, "char"):
-            self.event_queue.put((key.char, True))
+    def _configure_stdin(self) -> None:
+        if not sys.stdin.isatty():
+            raise RuntimeError("Keyboard teleop requires a TTY stdin.")
 
-    def _on_release(self, key):
-        if hasattr(key, "char"):
-            self.event_queue.put((key.char, False))
-        if key == keyboard.Key.esc:
-            logging.info("ESC pressed, disconnecting.")
-            self.disconnect()
+        if sys.platform == "win32":
+            return
+
+        self._stdin_fd = sys.stdin.fileno()
+        self._stdin_attrs = termios.tcgetattr(self._stdin_fd)
+        tty.setraw(self._stdin_fd)
+
+    def _restore_stdin(self) -> None:
+        if sys.platform == "win32":
+            return
+
+        if self._stdin_fd is not None and self._stdin_attrs is not None:
+            with contextlib.suppress(termios.error):
+                termios.tcsetattr(self._stdin_fd, termios.TCSADRAIN, self._stdin_attrs)
+        self._stdin_fd = None
+        self._stdin_attrs = None
+
+    def _read_char(self) -> str | None:
+        if sys.platform == "win32":
+            if not msvcrt.kbhit():
+                return None
+            ch = msvcrt.getwch()
+            if ch in ("\x00", "\xe0"):
+                return ch + msvcrt.getwch()
+            return ch
+
+        if self._stdin_fd is None:
+            return None
+        ready, _, _ = select.select([self._stdin_fd], [], [], 0.05)
+        if not ready:
+            return None
+        return sys.stdin.read(1)
+
+    def _normalize_key(self, raw_key: str) -> str | None:
+        if raw_key in ESCAPE_SEQUENCES:
+            return ESCAPE_SEQUENCES[raw_key]
+        if raw_key in ("\x1b", "\x00\x1b", "\xe0\x1b"):
+            return KEY_ESC
+        if raw_key in ("\x10",):
+            return KEY_CTRL_R
+        if raw_key in ("\x0c",):
+            return KEY_CTRL_L
+        if raw_key in ("\x1a",):
+            return KEY_SHIFT_R
+        if raw_key in ("\x13",):
+            return KEY_SHIFT
+        if len(raw_key) == 1:
+            return raw_key.lower()
+        return None
+
+    def _read_stdin_loop(self) -> None:
+        try:
+            while not self._stop_event.is_set():
+                raw_key = self._read_char()
+                if raw_key is None:
+                    continue
+
+                if raw_key == "\x1b" and sys.platform != "win32":
+                    next_chars = []
+                    for _ in range(2):
+                        ready, _, _ = select.select([self._stdin_fd], [], [], 0.001)
+                        if not ready:
+                            break
+                        next_chars.append(sys.stdin.read(1))
+                    raw_key = raw_key + "".join(next_chars)
+
+                key = self._normalize_key(raw_key)
+                if key is None:
+                    continue
+
+                self.event_queue.put(key)
+                if key == KEY_ESC:
+                    logging.info("ESC pressed, disconnecting.")
+                    self._stop_event.set()
+                    break
+        finally:
+            self._connected = False
+            self._restore_stdin()
 
     def _drain_pressed_keys(self):
         while not self.event_queue.empty():
-            key_char, is_pressed = self.event_queue.get_nowait()
-            self.current_pressed[key_char] = is_pressed
+            key_char = self.event_queue.get_nowait()
+            self.current_pressed.add(key_char)
 
     def configure(self):
         pass
@@ -127,8 +215,8 @@ class KeyboardTeleop(Teleoperator):
 
         self._drain_pressed_keys()
 
-        # Generate action based on current key states
-        action = {key for key, val in self.current_pressed.items() if val}
+        action = set(self.current_pressed)
+        self.current_pressed.clear()
         self.logs["read_pos_dt_s"] = time.perf_counter() - before_read_t
 
         return dict.fromkeys(action, None)
@@ -138,8 +226,14 @@ class KeyboardTeleop(Teleoperator):
 
     @check_if_not_connected
     def disconnect(self) -> None:
-        if self.listener is not None:
-            self.listener.stop()
+        self._stop_event.set()
+        if self._reader_thread is not None and self._reader_thread.is_alive():
+            self._reader_thread.join(timeout=0.2)
+        self._restore_stdin()
+        self._connected = False
+        self.listener = None
+        self._reader_thread = None
+        self.current_pressed.clear()
 
 
 class KeyboardEndEffectorTeleop(KeyboardTeleop):
@@ -179,29 +273,24 @@ class KeyboardEndEffectorTeleop(KeyboardTeleop):
         delta_z = 0.0
         gripper_action = 1.0
 
-        # Generate action based on current key states
-        for key, val in self.current_pressed.items():
-            if key == keyboard.Key.up:
-                delta_y = -int(val)
-            elif key == keyboard.Key.down:
-                delta_y = int(val)
-            elif key == keyboard.Key.left:
-                delta_x = int(val)
-            elif key == keyboard.Key.right:
-                delta_x = -int(val)
-            elif key == keyboard.Key.shift:
-                delta_z = -int(val)
-            elif key == keyboard.Key.shift_r:
-                delta_z = int(val)
-            elif key == keyboard.Key.ctrl_r:
-                # Gripper actions are expected to be between 0 (close), 1 (stay), 2 (open)
-                gripper_action = int(val) + 1
-            elif key == keyboard.Key.ctrl_l:
-                gripper_action = int(val) - 1
-            elif val:
-                # If the key is pressed, add it to the misc_keys_queue
-                # this will record key presses that are not part of the delta_x, delta_y, delta_z
-                # this is useful for retrieving other events like interventions for RL, episode success, etc.
+        for key in self.current_pressed:
+            if key == KEY_UP:
+                delta_y = -1.0
+            elif key == KEY_DOWN:
+                delta_y = 1.0
+            elif key == KEY_LEFT:
+                delta_x = 1.0
+            elif key == KEY_RIGHT:
+                delta_x = -1.0
+            elif key == KEY_SHIFT:
+                delta_z = -1.0
+            elif key == KEY_SHIFT_R:
+                delta_z = 1.0
+            elif key == KEY_CTRL_R:
+                gripper_action = 2.0
+            elif key == KEY_CTRL_L:
+                gripper_action = 0.0
+            else:
                 self.misc_keys_queue.put(key)
 
         self.current_pressed.clear()
@@ -244,17 +333,8 @@ class KeyboardEndEffectorTeleop(KeyboardTeleop):
             }
 
         # Check if any movement keys are currently pressed (indicates intervention)
-        movement_keys = [
-            keyboard.Key.up,
-            keyboard.Key.down,
-            keyboard.Key.left,
-            keyboard.Key.right,
-            keyboard.Key.shift,
-            keyboard.Key.shift_r,
-            keyboard.Key.ctrl_r,
-            keyboard.Key.ctrl_l,
-        ]
-        is_intervention = any(self.current_pressed.get(key, False) for key in movement_keys)
+        movement_keys = {KEY_UP, KEY_DOWN, KEY_LEFT, KEY_RIGHT, KEY_SHIFT, KEY_SHIFT_R, KEY_CTRL_R, KEY_CTRL_L}
+        is_intervention = any(key in movement_keys for key in self.current_pressed)
 
         # Check for episode control commands from misc_keys_queue
         terminate_episode = False
@@ -351,14 +431,10 @@ class KeyboardRoverTeleop(KeyboardTeleop):
         return True
 
     def _drain_pressed_keys(self):
-        """Update current_pressed state from event queue without clearing held keys"""
+        """Update current_pressed from queued stdin keypresses."""
         while not self.event_queue.empty():
-            key_char, is_pressed = self.event_queue.get_nowait()
-            if is_pressed:
-                self.current_pressed[key_char] = True
-            else:
-                # Only remove key if it's being released
-                self.current_pressed.pop(key_char, None)
+            key_char = self.event_queue.get_nowait()
+            self.current_pressed.add(key_char)
 
     @check_if_not_connected
     def get_action(self) -> RobotAction:
@@ -375,8 +451,7 @@ class KeyboardRoverTeleop(KeyboardTeleop):
         linear_velocity = 0.0
         angular_velocity = 0.0
 
-        # Check which keys are currently pressed (not released)
-        active_keys = {key for key, is_pressed in self.current_pressed.items() if is_pressed}
+        active_keys = set(self.current_pressed)
 
         # Linear movement (W/S) - these take priority
         if "w" in active_keys:
@@ -424,6 +499,7 @@ class KeyboardRoverTeleop(KeyboardTeleop):
                 f"Speed decreased: linear={self.current_linear_speed:.2f}, angular={self.current_angular_speed:.2f}"
             )
 
+        self.current_pressed.clear()
         self.logs["read_pos_dt_s"] = time.perf_counter() - before_read_t
 
         return {

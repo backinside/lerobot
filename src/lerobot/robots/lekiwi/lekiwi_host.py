@@ -74,8 +74,9 @@ def main(cfg: LeKiwiServerConfig):
     try:
         # Business logic
         start = time.perf_counter()
-        duration = 0
-        while duration < host.connection_time_s:
+        duration = 0.0
+        run_forever = host.connection_time_s == -1
+        while run_forever or duration < host.connection_time_s:
             loop_start_time = time.time()
             try:
                 msg = host.zmq_cmd_socket.recv_string(zmq.NOBLOCK)
@@ -120,7 +121,8 @@ def main(cfg: LeKiwiServerConfig):
 
             time.sleep(max(1 / host.max_loop_freq_hz - elapsed, 0))
             duration = time.perf_counter() - start
-        print("Cycle time reached.")
+        if not run_forever:
+            print("Cycle time reached.")
 
     except KeyboardInterrupt:
         print("Keyboard interrupt received. Exiting...")
