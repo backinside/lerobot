@@ -26,8 +26,8 @@ FPS = 30
 
 def main():
     # Update these values for your setup.
-    robot_config = SO101FollowerClientConfig(remote_ip="10.2.0.210", id="remote_so101")
-    leader_config = SO101LeaderConfig(port="/dev/ttyACM0", id="local_so101_leader")
+    robot_config = SO101FollowerClientConfig(remote_ip="10.2.3.100", id="greenankle")
+    leader_config = SO101LeaderConfig(port="/dev/ttyACM0", id="whitearm")
 
     robot = SO101FollowerClient(robot_config)
     leader = SO101Leader(leader_config)

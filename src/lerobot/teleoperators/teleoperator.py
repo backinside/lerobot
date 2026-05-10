@@ -41,6 +41,7 @@ class Teleoperator(abc.ABC):
     # Set these in ALL subclasses
     config_class: builtins.type[TeleoperatorConfig]
     name: str
+    legacy_calibration_names: tuple[str, ...] = ()
 
     def __init__(self, config: TeleoperatorConfig):
         self.id = config.id
@@ -52,8 +53,21 @@ class Teleoperator(abc.ABC):
         self.calibration_dir.mkdir(parents=True, exist_ok=True)
         self.calibration_fpath = self.calibration_dir / f"{self.id}.json"
         self.calibration: dict[str, MotorCalibration] = {}
-        if self.calibration_fpath.is_file():
+        calibration_path = self._resolve_calibration_path()
+        if calibration_path is not None:
+            self.calibration_fpath = calibration_path
             self._load_calibration()
+
+    def _resolve_calibration_path(self) -> Path | None:
+        if self.calibration_fpath.is_file():
+            return self.calibration_fpath
+
+        for legacy_name in self.legacy_calibration_names:
+            legacy_fpath = HF_LEROBOT_CALIBRATION / TELEOPERATORS / legacy_name / f"{self.id}.json"
+            if legacy_fpath.is_file():
+                return legacy_fpath
+
+        return None
 
     def __str__(self) -> str:
         return f"{self.id} {self.__class__.__name__}"

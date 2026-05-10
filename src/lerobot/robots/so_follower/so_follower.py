@@ -231,8 +231,10 @@ class SOFollower(Robot):
 class SO100Follower(SOFollower):
     config_class = SOFollowerRobotConfig
     name = "so100_follower"
+    legacy_calibration_names = ("so_follower",)
 
 
 class SO101Follower(SOFollower):
     config_class = SOFollowerRobotConfig
     name = "so101_follower"
+    legacy_calibration_names = ("so_follower",)

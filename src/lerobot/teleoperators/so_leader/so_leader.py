@@ -25,7 +25,7 @@ from lerobot.motors.feetech import (
 from lerobot.utils.decorators import check_if_already_connected, check_if_not_connected
 
 from ..teleoperator import Teleoperator
-from .config_so_leader import SOLeaderTeleopConfig
+from .config_so_leader import SO100LeaderConfig, SO101LeaderConfig, SOLeaderTeleopConfig
 
 logger = logging.getLogger(__name__)
 
@@ -162,6 +162,13 @@ class SOLeader(Teleoperator):
         self.bus.disconnect()
         logger.info(f"{self} disconnected.")
 
+class SO100Leader(SOLeader):
+    config_class = SO100LeaderConfig
+    name = "so100_leader"
+    legacy_calibration_names = ("so_leader",)
 
-SO100Leader = SOLeader
-SO101Leader = SOLeader
+
+class SO101Leader(SOLeader):
+    config_class = SO101LeaderConfig
+    name = "so101_leader"
+    legacy_calibration_names = ("so_leader",)

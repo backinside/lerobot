@@ -17,8 +17,16 @@
 from dataclasses import dataclass, field
 
 from lerobot.cameras import CameraConfig
+from lerobot.cameras.opencv import OpenCVCameraConfig
 
 from ..config import RobotConfig
+
+
+def so_follower_cameras_config() -> dict[str, CameraConfig]:
+    return {
+        "front": OpenCVCameraConfig(index_or_path="/dev/video0", width=640, height=480, fps=30),
+        "wrist": OpenCVCameraConfig(index_or_path="/dev/video2", width=640, height=480, fps=30),
+    }
 
 
 @dataclass
@@ -36,7 +44,7 @@ class SOFollowerConfig:
     max_relative_target: float | dict[str, float] | None = None
 
     # cameras
-    cameras: dict[str, CameraConfig] = field(default_factory=dict)
+    cameras: dict[str, CameraConfig] = field(default_factory=so_follower_cameras_config)
 
     # Set to `True` for backward compatibility with previous policies/dataset
     use_degrees: bool = True
@@ -66,7 +74,7 @@ class SOFollowerClientConfig(RobotConfig):
     remote_ip: str
     port_zmq_cmd: int = 5555
     port_zmq_observations: int = 5556
-    cameras: dict[str, CameraConfig] = field(default_factory=dict)
+    cameras: dict[str, CameraConfig] = field(default_factory=so_follower_cameras_config)
     polling_timeout_ms: int = 15
     connect_timeout_s: int = 5
 
