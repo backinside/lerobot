@@ -228,6 +228,11 @@ class SOFollower(Robot):
 
         logger.info(f"{self} disconnected.")
 
+class SO100Follower(SOFollower):
+    config_class = SOFollowerRobotConfig
+    name = "so100_follower"
 
-SO100Follower = SOFollower
-SO101Follower = SOFollower
+
+class SO101Follower(SOFollower):
+    config_class = SOFollowerRobotConfig
+    name = "so101_follower"
