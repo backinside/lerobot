@@ -70,6 +70,8 @@ logger = logging.getLogger(__name__)
 class RecalibrateMotorConfig:
     teleop: TeleoperatorConfig | None = None
     robot: RobotConfig | None = None
+    preset_positions: str | None = None
+    preset_settle_time_s: float = 1.0
     auto: bool = False
     auto_step_size: int = 32
     auto_settle_time_s: float = 0.05
@@ -591,6 +593,55 @@ def _choose_motor(device: Robot | Teleoperator) -> str:
     return motors[selected]
 
 
+def _parse_preset_positions(spec: str | None) -> dict[str, str]:
+    if spec is None:
+        return {}
+
+    presets: dict[str, str] = {}
+    for item in spec.split(","):
+        entry = item.strip()
+        if not entry:
+            continue
+        if "=" not in entry:
+            raise ValueError(
+                "Invalid --preset_positions entry. Expected format like "
+                "'shoulder_pan=min,elbow_flex=max'."
+            )
+        motor, target = (part.strip() for part in entry.split("=", 1))
+        if target not in {"min", "mid", "max"}:
+            raise ValueError(f"Invalid preset target '{target}' for motor '{motor}'. Use min, mid, or max.")
+        presets[motor] = target
+
+    return presets
+
+
+def _preset_goal_for_motor(device: Robot | Teleoperator, motor: str, target: str) -> int:
+    if motor not in device.calibration:
+        raise ValueError(f"Motor '{motor}' is not present in calibration file '{device.calibration_fpath}'.")
+
+    calibration = device.calibration[motor]
+    if target == "min":
+        return int(calibration.range_min)
+    if target == "max":
+        return int(calibration.range_max)
+    if target == "mid":
+        return int((calibration.range_min + calibration.range_max) / 2)
+    raise ValueError(target)
+
+
+def _apply_preset_positions(device: Robot | Teleoperator, preset_spec: str | None, settle_time_s: float) -> None:
+    presets = _parse_preset_positions(preset_spec)
+    if not presets:
+        return
+
+    bus = _require_single_bus(device)
+    goals = {motor: _preset_goal_for_motor(device, motor, target) for motor, target in presets.items()}
+    logger.info("Applying preset motor positions: %s", presets)
+    bus.enable_torque(list(goals))
+    bus.sync_write("Goal_Position", goals)
+    time.sleep(settle_time_s)
+
+
 @draccus.wrap()
 def recalibrate_motor(cfg: RecalibrateMotorConfig):
     init_logging()
@@ -603,6 +654,7 @@ def recalibrate_motor(cfg: RecalibrateMotorConfig):
 
     device.connect(calibrate=False)
     try:
+        _apply_preset_positions(device, cfg.preset_positions, cfg.preset_settle_time_s)
         recalibrate_selected_motor(device, motor, cfg)
     finally:
         device.disconnect()
