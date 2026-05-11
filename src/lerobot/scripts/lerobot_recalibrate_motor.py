@@ -75,6 +75,7 @@ class RecalibrateMotorConfig:
     auto_settle_time_s: float = 0.05
     auto_position_epsilon: int = 4
     auto_stall_samples: int = 4
+    auto_min_travel: int = 128
     auto_load_threshold: int = 250
     auto_current_threshold: int = 120
     auto_safety_margin: int = 16
@@ -243,6 +244,7 @@ def _move_until_stop(
     settle_time_s: float,
     position_epsilon: int,
     stall_samples: int,
+    min_travel: int,
     load_threshold: int,
     current_threshold: int,
 ) -> int:
@@ -263,6 +265,7 @@ def _move_until_stop(
         load = _read_optional_register(bus, "Present_Load", motor)
         current = _read_optional_register(bus, "Present_Current", motor)
         moving = _read_optional_register(bus, "Moving", motor)
+        traveled = abs(position - start_position)
 
         best_position = position
         if abs(position - last_position) <= position_epsilon:
@@ -270,11 +273,14 @@ def _move_until_stop(
         else:
             stalled_count = 0
 
+        has_meaningful_travel = traveled >= min_travel
         at_load_limit = load is not None and abs(load) >= load_threshold
         at_current_limit = current is not None and abs(current) >= current_threshold
-        no_longer_moving = moving == 0 and stalled_count > 0
+        no_longer_moving = moving == 0 and stalled_count >= stall_samples
 
-        if stalled_count >= stall_samples or at_load_limit or at_current_limit or no_longer_moving:
+        if has_meaningful_travel and (
+            stalled_count >= stall_samples or at_load_limit or at_current_limit or no_longer_moving
+        ):
             return best_position
 
         last_position = position
@@ -306,6 +312,7 @@ def _auto_recalibrate_feetech_motor(
         settle_time_s=cfg.auto_settle_time_s,
         position_epsilon=cfg.auto_position_epsilon,
         stall_samples=cfg.auto_stall_samples,
+        min_travel=cfg.auto_min_travel,
         load_threshold=cfg.auto_load_threshold,
         current_threshold=cfg.auto_current_threshold,
     )
@@ -322,6 +329,7 @@ def _auto_recalibrate_feetech_motor(
         settle_time_s=cfg.auto_settle_time_s,
         position_epsilon=cfg.auto_position_epsilon,
         stall_samples=cfg.auto_stall_samples,
+        min_travel=cfg.auto_min_travel,
         load_threshold=cfg.auto_load_threshold,
         current_threshold=cfg.auto_current_threshold,
     )
@@ -329,12 +337,14 @@ def _auto_recalibrate_feetech_motor(
     if right_stop <= left_stop:
         raise RuntimeError(f"Auto calibration failed for '{motor}': invalid stop order {left_stop}, {right_stop}.")
 
-    range_min = left_stop + cfg.auto_safety_margin
-    range_max = right_stop - cfg.auto_safety_margin
+    measured_span = right_stop - left_stop
+    effective_margin = min(cfg.auto_safety_margin, max(0, (measured_span - 1) // 4))
+    range_min = left_stop + effective_margin
+    range_max = right_stop - effective_margin
     if range_max <= range_min:
         raise RuntimeError(
-            f"Auto calibration failed for '{motor}': safety margin collapsed the usable range "
-            f"({range_min}, {range_max})."
+            f"Auto calibration failed for '{motor}': detected span is too small "
+            f"({left_stop} to {right_stop}, span={measured_span})."
         )
 
     midpoint = int((range_min + range_max) / 2)
@@ -351,6 +361,7 @@ def _auto_recalibrate_feetech_motor(
         midpoint,
         present_midpoint,
     )
+    logger.info("Auto-calibrated %s using effective safety margin %s", motor, effective_margin)
     _write_updated_calibration(
         device,
         bus,
