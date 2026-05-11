@@ -81,6 +81,7 @@ class RecalibrateMotorConfig:
     auto_current_threshold: int = 120
     auto_safety_margin: int = 16
     auto_debug: bool = False
+    auto_start_stall_samples: int = 8
 
     def __post_init__(self):
         if bool(self.teleop) == bool(self.robot):
@@ -280,6 +281,7 @@ def _move_until_stop(
     max_travel: int,
     load_threshold: int,
     current_threshold: int,
+    start_stall_samples: int,
 ) -> int:
     if direction not in (-1, 1):
         raise ValueError(direction)
@@ -326,11 +328,12 @@ def _move_until_stop(
         at_load_limit = load is not None and abs(load) >= load_threshold
         at_current_limit = current is not None and abs(current) >= current_threshold
         no_longer_moving = moving == 0 and stalled_count >= stall_samples
+        stuck_at_start = traveled == 0 and stalled_count >= start_stall_samples and moving == 0
 
         if debug:
             logger.info(
                 "[auto:%s] motor=%s goal=%s pos=%s traveled=%s load=%s current=%s moving=%s stalled=%s "
-                "meaningful_travel=%s at_load_limit=%s at_current_limit=%s no_longer_moving=%s",
+                "meaningful_travel=%s at_load_limit=%s at_current_limit=%s no_longer_moving=%s stuck_at_start=%s",
                 debug_label,
                 motor,
                 goal_position,
@@ -344,7 +347,19 @@ def _move_until_stop(
                 at_load_limit,
                 at_current_limit,
                 no_longer_moving,
+                stuck_at_start,
             )
+
+        if stuck_at_start:
+            logger.info(
+                "[auto:%s] detected motor=%s already at stop near start_position=%s because it never moved "
+                "after %s commands",
+                debug_label,
+                motor,
+                start_position,
+                stalled_count,
+            )
+            return start_position
 
         if has_meaningful_travel and (
             stalled_count >= stall_samples or at_load_limit or at_current_limit or no_longer_moving
@@ -397,6 +412,9 @@ def _auto_recalibrate_feetech_motor(
     motor: str,
     cfg: RecalibrateMotorConfig,
 ) -> None:
+    # Reset the motor-side limits and offset so the sweep does not inherit stale calibration.
+    bus.reset_calibration([motor])
+
     # Conservative limits reduce impact if the motor hits a hard stop.
     if _read_optional_register(bus, "Torque_Limit", motor) is not None:
         bus.write("Torque_Limit", motor, 200, normalize=False)
@@ -420,6 +438,7 @@ def _auto_recalibrate_feetech_motor(
         max_travel=cfg.auto_max_travel,
         load_threshold=cfg.auto_load_threshold,
         current_threshold=cfg.auto_current_threshold,
+        start_stall_samples=cfg.auto_start_stall_samples,
     )
 
     bus.write("Goal_Position", motor, center, normalize=False)
@@ -441,6 +460,7 @@ def _auto_recalibrate_feetech_motor(
         max_travel=cfg.auto_max_travel,
         load_threshold=cfg.auto_load_threshold,
         current_threshold=cfg.auto_current_threshold,
+        start_stall_samples=cfg.auto_start_stall_samples,
     )
 
     if right_stop <= left_stop:
