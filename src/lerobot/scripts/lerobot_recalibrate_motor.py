@@ -70,8 +70,6 @@ logger = logging.getLogger(__name__)
 class RecalibrateMotorConfig:
     teleop: TeleoperatorConfig | None = None
     robot: RobotConfig | None = None
-    preset_positions: str | None = None
-    preset_settle_time_s: float = 1.0
     auto: bool = False
     auto_step_size: int = 32
     auto_settle_time_s: float = 0.05
@@ -593,28 +591,6 @@ def _choose_motor(device: Robot | Teleoperator) -> str:
     return motors[selected]
 
 
-def _parse_preset_positions(spec: str | None) -> dict[str, str]:
-    if spec is None:
-        return {}
-
-    presets: dict[str, str] = {}
-    for item in spec.split(","):
-        entry = item.strip()
-        if not entry:
-            continue
-        if "=" not in entry:
-            raise ValueError(
-                "Invalid --preset_positions entry. Expected format like "
-                "'shoulder_pan=min,elbow_flex=max'."
-            )
-        motor, target = (part.strip() for part in entry.split("=", 1))
-        if target not in {"min", "mid", "max"}:
-            raise ValueError(f"Invalid preset target '{target}' for motor '{motor}'. Use min, mid, or max.")
-        presets[motor] = target
-
-    return presets
-
-
 def _preset_goal_for_motor(device: Robot | Teleoperator, motor: str, target: str) -> int:
     if motor not in device.calibration:
         raise ValueError(f"Motor '{motor}' is not present in calibration file '{device.calibration_fpath}'.")
@@ -629,8 +605,38 @@ def _preset_goal_for_motor(device: Robot | Teleoperator, motor: str, target: str
     raise ValueError(target)
 
 
-def _apply_preset_positions(device: Robot | Teleoperator, preset_spec: str | None, settle_time_s: float) -> None:
-    presets = _parse_preset_positions(preset_spec)
+def _prompt_for_preset_positions(device: Robot | Teleoperator) -> dict[str, str]:
+    print(
+        "\nOptional pre-positioning lets you move one or more motors to saved min/mid/max "
+        "before auto calibration starts."
+    )
+    user_input = input(
+        "Enter presets like 'shoulder_pan=min,elbow_flex=max' or press ENTER to skip: "
+    ).strip()
+    if not user_input:
+        return {}
+
+    presets: dict[str, str] = {}
+    for item in user_input.split(","):
+        entry = item.strip()
+        if not entry:
+            continue
+        if "=" not in entry:
+            raise ValueError(
+                "Invalid preset entry. Expected format like 'shoulder_pan=min,elbow_flex=max'."
+            )
+        motor, target = (part.strip() for part in entry.split("=", 1))
+        if motor not in device.calibration:
+            raise ValueError(f"Motor '{motor}' is not present in calibration file '{device.calibration_fpath}'.")
+        if target not in {"min", "mid", "max"}:
+            raise ValueError(f"Invalid preset target '{target}' for motor '{motor}'. Use min, mid, or max.")
+        presets[motor] = target
+
+    return presets
+
+
+def _apply_preset_positions(device: Robot | Teleoperator, settle_time_s: float = 1.0) -> None:
+    presets = _prompt_for_preset_positions(device)
     if not presets:
         return
 
@@ -654,7 +660,8 @@ def recalibrate_motor(cfg: RecalibrateMotorConfig):
 
     device.connect(calibrate=False)
     try:
-        _apply_preset_positions(device, cfg.preset_positions, cfg.preset_settle_time_s)
+        if cfg.auto:
+            _apply_preset_positions(device)
         recalibrate_selected_motor(device, motor, cfg)
     finally:
         device.disconnect()
