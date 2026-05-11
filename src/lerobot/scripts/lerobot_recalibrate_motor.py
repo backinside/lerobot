@@ -21,6 +21,7 @@ Requires: pip install 'lerobot[hardware]'
 """
 
 import logging
+import time
 from dataclasses import asdict, dataclass
 from pathlib import Path
 from pprint import pformat
@@ -68,6 +69,14 @@ logger = logging.getLogger(__name__)
 class RecalibrateMotorConfig:
     teleop: TeleoperatorConfig | None = None
     robot: RobotConfig | None = None
+    auto: bool = False
+    auto_step_size: int = 32
+    auto_settle_time_s: float = 0.05
+    auto_position_epsilon: int = 4
+    auto_stall_samples: int = 4
+    auto_load_threshold: int = 250
+    auto_current_threshold: int = 120
+    auto_safety_margin: int = 16
 
     def __post_init__(self):
         if bool(self.teleop) == bool(self.robot):
@@ -179,10 +188,179 @@ def _is_full_turn_motor(bus: Any, motor: str, calibration: Any) -> bool:
     return calibration.range_min == 0 and calibration.range_max == max_resolution
 
 
-def recalibrate_selected_motor(device: Robot | Teleoperator, motor: str) -> None:
-    bus = _require_single_bus(device)
+def _write_updated_calibration(
+    device: Robot | Teleoperator,
+    bus: Any,
+    motor: str,
+    *,
+    homing_offset: int,
+    range_min: int,
+    range_max: int,
+) -> None:
     existing_calibration = device.calibration[motor]
+    updated_calibration = type(existing_calibration)(
+        id=existing_calibration.id,
+        drive_mode=existing_calibration.drive_mode,
+        homing_offset=homing_offset,
+        range_min=range_min,
+        range_max=range_max,
+    )
 
+    device.calibration[motor] = updated_calibration
+    bus.write_calibration({motor: updated_calibration}, cache=False)
+    bus.calibration = device.calibration
+    device._save_calibration()
+    print(f"Updated '{motor}' in {device.calibration_fpath}")
+
+
+def _read_optional_register(bus: Any, data_name: str, motor: str) -> int | None:
+    try:
+        return int(bus.read(data_name, motor, normalize=False))
+    except Exception:
+        return None
+
+
+def _move_until_stop(
+    bus: Any,
+    motor: str,
+    *,
+    direction: int,
+    start_position: int,
+    step_size: int,
+    settle_time_s: float,
+    position_epsilon: int,
+    stall_samples: int,
+    load_threshold: int,
+    current_threshold: int,
+) -> int:
+    if direction not in (-1, 1):
+        raise ValueError(direction)
+
+    goal_position = start_position
+    last_position = start_position
+    stalled_count = 0
+    best_position = start_position
+
+    while True:
+        goal_position += direction * step_size
+        bus.write("Goal_Position", motor, goal_position, normalize=False)
+        time.sleep(settle_time_s)
+
+        position = int(bus.read("Present_Position", motor, normalize=False))
+        load = _read_optional_register(bus, "Present_Load", motor)
+        current = _read_optional_register(bus, "Present_Current", motor)
+        moving = _read_optional_register(bus, "Moving", motor)
+
+        best_position = position
+        if abs(position - last_position) <= position_epsilon:
+            stalled_count += 1
+        else:
+            stalled_count = 0
+
+        at_load_limit = load is not None and abs(load) >= load_threshold
+        at_current_limit = current is not None and abs(current) >= current_threshold
+        no_longer_moving = moving == 0 and stalled_count > 0
+
+        if stalled_count >= stall_samples or at_load_limit or at_current_limit or no_longer_moving:
+            return best_position
+
+        last_position = position
+
+
+def _auto_recalibrate_feetech_motor(
+    device: Robot | Teleoperator,
+    bus: Any,
+    motor: str,
+    cfg: RecalibrateMotorConfig,
+) -> None:
+    existing_calibration = device.calibration[motor]
+    if _is_full_turn_motor(bus, motor, existing_calibration):
+        raise NotImplementedError(f"Auto calibration is not supported for full-turn motor '{motor}'.")
+
+    # Conservative limits reduce impact if the motor hits a hard stop.
+    if _read_optional_register(bus, "Torque_Limit", motor) is not None:
+        bus.write("Torque_Limit", motor, 200, normalize=False)
+    if _read_optional_register(bus, "Protection_Current", motor) is not None:
+        bus.write("Protection_Current", motor, max(cfg.auto_current_threshold, 1), normalize=False)
+
+    center = int(bus.read("Present_Position", motor, normalize=False))
+    left_stop = _move_until_stop(
+        bus,
+        motor,
+        direction=-1,
+        start_position=center,
+        step_size=cfg.auto_step_size,
+        settle_time_s=cfg.auto_settle_time_s,
+        position_epsilon=cfg.auto_position_epsilon,
+        stall_samples=cfg.auto_stall_samples,
+        load_threshold=cfg.auto_load_threshold,
+        current_threshold=cfg.auto_current_threshold,
+    )
+
+    bus.write("Goal_Position", motor, center, normalize=False)
+    time.sleep(cfg.auto_settle_time_s)
+
+    right_stop = _move_until_stop(
+        bus,
+        motor,
+        direction=1,
+        start_position=center,
+        step_size=cfg.auto_step_size,
+        settle_time_s=cfg.auto_settle_time_s,
+        position_epsilon=cfg.auto_position_epsilon,
+        stall_samples=cfg.auto_stall_samples,
+        load_threshold=cfg.auto_load_threshold,
+        current_threshold=cfg.auto_current_threshold,
+    )
+
+    if right_stop <= left_stop:
+        raise RuntimeError(f"Auto calibration failed for '{motor}': invalid stop order {left_stop}, {right_stop}.")
+
+    range_min = left_stop + cfg.auto_safety_margin
+    range_max = right_stop - cfg.auto_safety_margin
+    if range_max <= range_min:
+        raise RuntimeError(
+            f"Auto calibration failed for '{motor}': safety margin collapsed the usable range "
+            f"({range_min}, {range_max})."
+        )
+
+    midpoint = int((range_min + range_max) / 2)
+    bus.write("Goal_Position", motor, midpoint, normalize=False)
+    time.sleep(cfg.auto_settle_time_s)
+    present_midpoint = int(bus.read("Present_Position", motor, normalize=False))
+    homing_offset = int(bus.set_half_turn_homings([motor])[motor])
+
+    logger.info(
+        "Auto-calibrated %s: left_stop=%s right_stop=%s midpoint=%s present_midpoint=%s",
+        motor,
+        left_stop,
+        right_stop,
+        midpoint,
+        present_midpoint,
+    )
+    _write_updated_calibration(
+        device,
+        bus,
+        motor,
+        homing_offset=homing_offset,
+        range_min=range_min,
+        range_max=range_max,
+    )
+
+
+def recalibrate_selected_motor(
+    device: Robot | Teleoperator,
+    motor: str,
+    cfg: RecalibrateMotorConfig | None = None,
+) -> None:
+    bus = _require_single_bus(device)
+
+    if cfg is not None and cfg.auto:
+        with bus.torque_disabled(motor):
+            _auto_recalibrate_feetech_motor(device, bus, motor, cfg)
+        return
+
+    existing_calibration = device.calibration[motor]
     with bus.torque_disabled(motor):
         input(f"Move '{motor}' to the middle of its range of motion and press ENTER...")
         homing_offset = int(bus.set_half_turn_homings([motor])[motor])
@@ -200,19 +378,14 @@ def recalibrate_selected_motor(device: Robot | Teleoperator, motor: str) -> None
             range_min = int(range_mins[motor])
             range_max = int(range_maxes[motor])
 
-    updated_calibration = type(existing_calibration)(
-        id=existing_calibration.id,
-        drive_mode=existing_calibration.drive_mode,
+    _write_updated_calibration(
+        device,
+        bus,
+        motor,
         homing_offset=homing_offset,
         range_min=range_min,
         range_max=range_max,
     )
-
-    device.calibration[motor] = updated_calibration
-    bus.write_calibration({motor: updated_calibration}, cache=False)
-    bus.calibration = device.calibration
-    device._save_calibration()
-    print(f"Updated '{motor}' in {device.calibration_fpath}")
 
 
 def _choose_motor(device: Robot | Teleoperator) -> str:
@@ -248,7 +421,7 @@ def recalibrate_motor(cfg: RecalibrateMotorConfig):
 
     device.connect(calibrate=False)
     try:
-        recalibrate_selected_motor(device, motor)
+        recalibrate_selected_motor(device, motor, cfg)
     finally:
         device.disconnect()
 
