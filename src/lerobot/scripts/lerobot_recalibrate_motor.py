@@ -253,6 +253,27 @@ def _debug_write_goal_position(
     bus.write("Goal_Position", motor, goal_position, normalize=False)
 
 
+def _get_wrap_resolution(bus: Any, motor: str) -> int | None:
+    model_resolution_table = getattr(bus, "model_resolution_table", None)
+    if not model_resolution_table:
+        return None
+    model = bus.motors[motor].model
+    return int(model_resolution_table[model])
+
+
+def _wrapped_delta(current: int, previous: int, resolution: int | None) -> int:
+    raw_delta = current - previous
+    if resolution is None:
+        return raw_delta
+
+    half_resolution = resolution / 2
+    if raw_delta > half_resolution:
+        return int(raw_delta - resolution)
+    if raw_delta < -half_resolution:
+        return int(raw_delta + resolution)
+    return raw_delta
+
+
 def _move_until_stop(
     bus: Any,
     motor: str,
@@ -278,6 +299,8 @@ def _move_until_stop(
     last_position = start_position
     stalled_count = 0
     best_position = start_position
+    cumulative_delta = 0
+    wrap_resolution = _get_wrap_resolution(bus, motor)
 
     logger.info(
         "[auto:%s] start motor=%s direction=%s start_position=%s step_size=%s min_travel=%s max_travel=%s "
@@ -304,10 +327,12 @@ def _move_until_stop(
         load = _debug_read_optional_register(bus, "Present_Load", motor, debug, debug_label)
         current = _debug_read_optional_register(bus, "Present_Current", motor, debug, debug_label)
         moving = _debug_read_optional_register(bus, "Moving", motor, debug, debug_label)
-        traveled = abs(position - start_position)
+        step_delta = _wrapped_delta(position, last_position, wrap_resolution)
+        cumulative_delta += step_delta
+        traveled = abs(cumulative_delta)
 
         best_position = position
-        if abs(position - last_position) <= position_epsilon:
+        if abs(step_delta) <= position_epsilon:
             stalled_count += 1
         else:
             stalled_count = 0
@@ -316,13 +341,13 @@ def _move_until_stop(
         at_load_limit = load is not None and abs(load) >= load_threshold
         at_current_limit = current is not None and abs(current) >= current_threshold
         no_longer_moving = moving == 0 and stalled_count >= stall_samples
-        stuck_at_start = traveled == 0 and stalled_count >= start_stall_samples and moving == 0
+        stuck_at_start = traveled <= position_epsilon and stalled_count >= start_stall_samples and moving == 0
         stalled_after_some_motion = traveled > position_epsilon and stalled_count >= stall_samples and moving == 0
 
         if debug:
             logger.info(
                 "[auto:%s] motor=%s goal=%s pos=%s traveled=%s load=%s current=%s moving=%s stalled=%s "
-                "meaningful_travel=%s at_load_limit=%s at_current_limit=%s no_longer_moving=%s "
+                "step_delta=%s meaningful_travel=%s at_load_limit=%s at_current_limit=%s no_longer_moving=%s "
                 "stalled_after_some_motion=%s stuck_at_start=%s",
                 debug_label,
                 motor,
@@ -333,6 +358,7 @@ def _move_until_stop(
                 current,
                 moving,
                 stalled_count,
+                step_delta,
                 has_meaningful_travel,
                 at_load_limit,
                 at_current_limit,
