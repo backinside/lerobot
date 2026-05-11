@@ -75,7 +75,7 @@ class RecalibrateMotorConfig:
     auto_settle_time_s: float = 0.05
     auto_position_epsilon: int = 4
     auto_stall_samples: int = 4
-    auto_min_travel: int = 128
+    auto_min_travel: int = 16
     auto_max_travel: int = 4096
     auto_load_threshold: int = 250
     auto_current_threshold: int = 120
@@ -329,11 +329,13 @@ def _move_until_stop(
         at_current_limit = current is not None and abs(current) >= current_threshold
         no_longer_moving = moving == 0 and stalled_count >= stall_samples
         stuck_at_start = traveled == 0 and stalled_count >= start_stall_samples and moving == 0
+        stalled_after_some_motion = traveled > position_epsilon and stalled_count >= stall_samples and moving == 0
 
         if debug:
             logger.info(
                 "[auto:%s] motor=%s goal=%s pos=%s traveled=%s load=%s current=%s moving=%s stalled=%s "
-                "meaningful_travel=%s at_load_limit=%s at_current_limit=%s no_longer_moving=%s stuck_at_start=%s",
+                "meaningful_travel=%s at_load_limit=%s at_current_limit=%s no_longer_moving=%s "
+                "stalled_after_some_motion=%s stuck_at_start=%s",
                 debug_label,
                 motor,
                 goal_position,
@@ -347,6 +349,7 @@ def _move_until_stop(
                 at_load_limit,
                 at_current_limit,
                 no_longer_moving,
+                stalled_after_some_motion,
                 stuck_at_start,
             )
 
@@ -361,10 +364,14 @@ def _move_until_stop(
             )
             return start_position
 
-        if has_meaningful_travel and (
+        if stalled_after_some_motion or (
+            has_meaningful_travel and (
             stalled_count >= stall_samples or at_load_limit or at_current_limit or no_longer_moving
+            )
         ):
             reasons = []
+            if stalled_after_some_motion:
+                reasons.append(f"stalled_after_some_motion traveled={traveled}")
             if stalled_count >= stall_samples:
                 reasons.append(f"stall_count={stalled_count}")
             if at_load_limit:
