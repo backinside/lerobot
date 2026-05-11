@@ -70,6 +70,9 @@ logger = logging.getLogger(__name__)
 class RecalibrateMotorConfig:
     teleop: TeleoperatorConfig | None = None
     robot: RobotConfig | None = None
+    preset_move_duration_ms: int = 1200
+    preset_move_velocity: int = 80
+    preset_settle_time_s: float = 1.2
     auto: bool = False
     auto_step_size: int = 32
     auto_settle_time_s: float = 0.05
@@ -598,15 +601,19 @@ def _preset_goal_for_motor(device: Robot | Teleoperator, motor: str, target: str
     calibration = device.calibration[motor]
     if target == "min":
         return int(calibration.range_min)
-    if target == "max":
-        return int(calibration.range_max)
+    if target == "low_mid":
+        return int(calibration.range_min + (calibration.range_max - calibration.range_min) * 0.25)
     if target == "mid":
         return int((calibration.range_min + calibration.range_max) / 2)
+    if target == "high_mid":
+        return int(calibration.range_min + (calibration.range_max - calibration.range_min) * 0.75)
+    if target == "max":
+        return int(calibration.range_max)
     raise ValueError(target)
 
 
 def _choose_position_target() -> str:
-    targets = ["min", "mid", "max"]
+    targets = ["min", "low_mid", "mid", "high_mid", "max"]
     print("\nAvailable positions:")
     for idx, target in enumerate(targets, start=1):
         print(f"[{idx}] {target}")
@@ -614,7 +621,7 @@ def _choose_position_target() -> str:
     return targets[selected]
 
 
-def _interactive_preposition_motors(device: Robot | Teleoperator, settle_time_s: float = 1.0) -> None:
+def _interactive_preposition_motors(device: Robot | Teleoperator, cfg: RecalibrateMotorConfig) -> None:
     bus = _require_single_bus(device)
     motors = list(device.calibration)
     if not motors:
@@ -622,7 +629,7 @@ def _interactive_preposition_motors(device: Robot | Teleoperator, settle_time_s:
 
     print(
         "\nPre-position motors before auto calibration.\n"
-        "Select one motor at a time, choose min/mid/max, and the arm will move immediately.\n"
+        "Select one motor at a time, choose one of five saved positions, and the arm will move slowly.\n"
         "Press ENTER at the motor prompt when you are satisfied and want to continue."
     )
 
@@ -648,8 +655,16 @@ def _interactive_preposition_motors(device: Robot | Teleoperator, settle_time_s:
         goal = _preset_goal_for_motor(device, motor, target)
         logger.info("Applying preset position: motor=%s target=%s goal=%s", motor, target, goal)
         bus.enable_torque(motor)
+        for register, value in (
+            ("Goal_Time", max(cfg.preset_move_duration_ms, 0)),
+            ("Goal_Velocity", max(cfg.preset_move_velocity, 0)),
+        ):
+            try:
+                bus.write(register, motor, value, normalize=False)
+            except Exception:
+                pass
         bus.write("Goal_Position", motor, goal, normalize=False)
-        time.sleep(settle_time_s)
+        time.sleep(cfg.preset_settle_time_s)
 
 
 @draccus.wrap()
@@ -664,7 +679,7 @@ def recalibrate_motor(cfg: RecalibrateMotorConfig):
     device.connect(calibrate=False)
     try:
         if cfg.auto:
-            _interactive_preposition_motors(device)
+            _interactive_preposition_motors(device, cfg)
         motor = _choose_motor(device)
         recalibrate_selected_motor(device, motor, cfg)
     finally:
