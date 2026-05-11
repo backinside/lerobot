@@ -236,6 +236,34 @@ def _read_optional_register(bus: Any, data_name: str, motor: str) -> int | None:
         return None
 
 
+def _debug_read_register(bus: Any, data_name: str, motor: str, debug: bool, debug_label: str) -> int:
+    if debug:
+        logger.info("[auto:%s] reading %s for motor=%s", debug_label, data_name, motor)
+    value = int(bus.read(data_name, motor, normalize=False))
+    if debug:
+        logger.info("[auto:%s] read %s=%s for motor=%s", debug_label, data_name, value, motor)
+    return value
+
+
+def _debug_read_optional_register(bus: Any, data_name: str, motor: str, debug: bool, debug_label: str) -> int | None:
+    if debug:
+        logger.info("[auto:%s] reading optional %s for motor=%s", debug_label, data_name, motor)
+    value = _read_optional_register(bus, data_name, motor)
+    if debug:
+        logger.info("[auto:%s] read optional %s=%s for motor=%s", debug_label, data_name, value, motor)
+    return value
+
+
+def _debug_write_goal_position(
+    bus: Any, motor: str, goal_position: int, debug: bool, debug_label: str
+) -> None:
+    if debug:
+        logger.info("[auto:%s] writing Goal_Position=%s for motor=%s", debug_label, goal_position, motor)
+    bus.write("Goal_Position", motor, goal_position, normalize=False)
+    if debug:
+        logger.info("[auto:%s] wrote Goal_Position=%s for motor=%s", debug_label, goal_position, motor)
+
+
 def _move_until_stop(
     bus: Any,
     motor: str,
@@ -279,13 +307,13 @@ def _move_until_stop(
 
     while True:
         goal_position += direction * step_size
-        bus.write("Goal_Position", motor, goal_position, normalize=False)
+        _debug_write_goal_position(bus, motor, goal_position, debug, debug_label)
         time.sleep(settle_time_s)
 
-        position = int(bus.read("Present_Position", motor, normalize=False))
-        load = _read_optional_register(bus, "Present_Load", motor)
-        current = _read_optional_register(bus, "Present_Current", motor)
-        moving = _read_optional_register(bus, "Moving", motor)
+        position = _debug_read_register(bus, "Present_Position", motor, debug, debug_label)
+        load = _debug_read_optional_register(bus, "Present_Load", motor, debug, debug_label)
+        current = _debug_read_optional_register(bus, "Present_Current", motor, debug, debug_label)
+        moving = _debug_read_optional_register(bus, "Moving", motor, debug, debug_label)
         traveled = abs(position - start_position)
 
         best_position = position
