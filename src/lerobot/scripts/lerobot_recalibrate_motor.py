@@ -21,6 +21,7 @@ Requires: pip install 'lerobot[hardware]'
 """
 
 import logging
+import sys
 import time
 from dataclasses import asdict, dataclass
 from pathlib import Path
@@ -83,6 +84,18 @@ class RecalibrateMotorConfig:
             raise ValueError("Choose either a teleop or a robot.")
 
         self.device = self.robot if self.robot else self.teleop
+
+
+def _normalize_bool_flag_argv(argv: list[str], flag: str) -> list[str]:
+    normalized: list[str] = []
+    for arg in argv:
+        if arg == flag:
+            normalized.append(f"{flag}=true")
+        elif arg == f"--no-{flag.removeprefix('--')}":
+            normalized.append(f"{flag}=false")
+        else:
+            normalized.append(arg)
+    return normalized
 
 
 def _make_device(device_config: RobotConfig | TeleoperatorConfig) -> Robot | Teleoperator:
@@ -356,8 +369,9 @@ def recalibrate_selected_motor(
     bus = _require_single_bus(device)
 
     if cfg is not None and cfg.auto:
-        with bus.torque_disabled(motor):
-            _auto_recalibrate_feetech_motor(device, bus, motor, cfg)
+        # Auto calibration needs the motor actively driven so it can sweep toward both stops.
+        bus.enable_torque(motor)
+        _auto_recalibrate_feetech_motor(device, bus, motor, cfg)
         return
 
     existing_calibration = device.calibration[motor]
@@ -428,6 +442,7 @@ def recalibrate_motor(cfg: RecalibrateMotorConfig):
 
 def main():
     register_third_party_plugins()
+    sys.argv = [sys.argv[0], *_normalize_bool_flag_argv(sys.argv[1:], "--auto")]
     recalibrate_motor()
 
 
