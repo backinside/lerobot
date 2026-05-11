@@ -605,47 +605,51 @@ def _preset_goal_for_motor(device: Robot | Teleoperator, motor: str, target: str
     raise ValueError(target)
 
 
-def _prompt_for_preset_positions(device: Robot | Teleoperator) -> dict[str, str]:
-    print(
-        "\nOptional pre-positioning lets you move one or more motors to saved min/mid/max "
-        "before auto calibration starts."
-    )
-    user_input = input(
-        "Enter presets like 'shoulder_pan=min,elbow_flex=max' or press ENTER to skip: "
-    ).strip()
-    if not user_input:
-        return {}
-
-    presets: dict[str, str] = {}
-    for item in user_input.split(","):
-        entry = item.strip()
-        if not entry:
-            continue
-        if "=" not in entry:
-            raise ValueError(
-                "Invalid preset entry. Expected format like 'shoulder_pan=min,elbow_flex=max'."
-            )
-        motor, target = (part.strip() for part in entry.split("=", 1))
-        if motor not in device.calibration:
-            raise ValueError(f"Motor '{motor}' is not present in calibration file '{device.calibration_fpath}'.")
-        if target not in {"min", "mid", "max"}:
-            raise ValueError(f"Invalid preset target '{target}' for motor '{motor}'. Use min, mid, or max.")
-        presets[motor] = target
-
-    return presets
+def _choose_position_target() -> str:
+    targets = ["min", "mid", "max"]
+    print("\nAvailable positions:")
+    for idx, target in enumerate(targets, start=1):
+        print(f"[{idx}] {target}")
+    selected = _prompt_for_index("\nSelect a position: ", targets)
+    return targets[selected]
 
 
-def _apply_preset_positions(device: Robot | Teleoperator, settle_time_s: float = 1.0) -> None:
-    presets = _prompt_for_preset_positions(device)
-    if not presets:
+def _interactive_preposition_motors(device: Robot | Teleoperator, settle_time_s: float = 1.0) -> None:
+    bus = _require_single_bus(device)
+    motors = list(device.calibration)
+    if not motors:
         return
 
-    bus = _require_single_bus(device)
-    goals = {motor: _preset_goal_for_motor(device, motor, target) for motor, target in presets.items()}
-    logger.info("Applying preset motor positions: %s", presets)
-    bus.enable_torque(list(goals))
-    bus.sync_write("Goal_Position", goals)
-    time.sleep(settle_time_s)
+    print(
+        "\nPre-position motors before auto calibration.\n"
+        "Select one motor at a time, choose min/mid/max, and the arm will move immediately.\n"
+        "Press ENTER at the motor prompt when you are satisfied and want to continue."
+    )
+
+    while True:
+        print("\nAvailable motors:")
+        for idx, motor in enumerate(motors, start=1):
+            print(f"[{idx}] {motor}")
+
+        user_input = input("\nSelect a motor to move, or press ENTER to continue to auto calibration: ").strip()
+        if not user_input:
+            return
+        if not user_input.isdigit():
+            print("Enter the number corresponding to your choice.")
+            continue
+
+        idx = int(user_input) - 1
+        if idx < 0 or idx >= len(motors):
+            print("Selection out of range.")
+            continue
+
+        motor = motors[idx]
+        target = _choose_position_target()
+        goal = _preset_goal_for_motor(device, motor, target)
+        logger.info("Applying preset position: motor=%s target=%s goal=%s", motor, target, goal)
+        bus.enable_torque(motor)
+        bus.write("Goal_Position", motor, goal, normalize=False)
+        time.sleep(settle_time_s)
 
 
 @draccus.wrap()
@@ -656,12 +660,12 @@ def recalibrate_motor(cfg: RecalibrateMotorConfig):
     device = _make_device(cfg.device)
     calibration_fpath = _choose_calibration_file(device)
     _load_selected_calibration(device, calibration_fpath)
-    motor = _choose_motor(device)
 
     device.connect(calibrate=False)
     try:
         if cfg.auto:
-            _apply_preset_positions(device)
+            _interactive_preposition_motors(device)
+        motor = _choose_motor(device)
         recalibrate_selected_motor(device, motor, cfg)
     finally:
         device.disconnect()
