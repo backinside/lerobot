@@ -238,31 +238,19 @@ def _read_optional_register(bus: Any, data_name: str, motor: str) -> int | None:
 
 
 def _debug_read_register(bus: Any, data_name: str, motor: str, debug: bool, debug_label: str) -> int:
-    if debug:
-        logger.info("[auto:%s] reading %s for motor=%s", debug_label, data_name, motor)
     value = int(bus.read(data_name, motor, normalize=False))
-    if debug:
-        logger.info("[auto:%s] read %s=%s for motor=%s", debug_label, data_name, value, motor)
     return value
 
 
 def _debug_read_optional_register(bus: Any, data_name: str, motor: str, debug: bool, debug_label: str) -> int | None:
-    if debug:
-        logger.info("[auto:%s] reading optional %s for motor=%s", debug_label, data_name, motor)
     value = _read_optional_register(bus, data_name, motor)
-    if debug:
-        logger.info("[auto:%s] read optional %s=%s for motor=%s", debug_label, data_name, value, motor)
     return value
 
 
 def _debug_write_goal_position(
     bus: Any, motor: str, goal_position: int, debug: bool, debug_label: str
 ) -> None:
-    if debug:
-        logger.info("[auto:%s] writing Goal_Position=%s for motor=%s", debug_label, goal_position, motor)
     bus.write("Goal_Position", motor, goal_position, normalize=False)
-    if debug:
-        logger.info("[auto:%s] wrote Goal_Position=%s for motor=%s", debug_label, goal_position, motor)
 
 
 def _move_until_stop(
@@ -488,15 +476,21 @@ def _auto_recalibrate_feetech_motor(
     time.sleep(cfg.auto_settle_time_s)
     present_midpoint = int(bus.read("Present_Position", motor, normalize=False))
     homing_offset = int(bus.set_half_turn_homings([motor])[motor])
+    calibrated_range_min = range_min - homing_offset
+    calibrated_range_max = range_max - homing_offset
 
     logger.info(
-        "Auto-calibrated %s: left_stop=%s right_stop=%s measured_span=%s midpoint=%s present_midpoint=%s",
+        "Auto-calibrated %s: left_stop=%s right_stop=%s measured_span=%s midpoint=%s present_midpoint=%s "
+        "homing_offset=%s calibrated_range=(%s, %s)",
         motor,
         left_stop,
         right_stop,
         measured_span,
         midpoint,
         present_midpoint,
+        homing_offset,
+        calibrated_range_min,
+        calibrated_range_max,
     )
     logger.info("Auto-calibrated %s using effective safety margin %s", motor, effective_margin)
     _write_updated_calibration(
@@ -504,8 +498,8 @@ def _auto_recalibrate_feetech_motor(
         bus,
         motor,
         homing_offset=homing_offset,
-        range_min=range_min,
-        range_max=range_max,
+        range_min=calibrated_range_min,
+        range_max=calibrated_range_max,
     )
 
 
