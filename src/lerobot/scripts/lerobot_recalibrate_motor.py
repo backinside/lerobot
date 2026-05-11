@@ -76,6 +76,7 @@ class RecalibrateMotorConfig:
     auto_position_epsilon: int = 4
     auto_stall_samples: int = 4
     auto_min_travel: int = 128
+    auto_max_travel: int = 4096
     auto_load_threshold: int = 250
     auto_current_threshold: int = 120
     auto_safety_margin: int = 16
@@ -245,6 +246,7 @@ def _move_until_stop(
     position_epsilon: int,
     stall_samples: int,
     min_travel: int,
+    max_travel: int,
     load_threshold: int,
     current_threshold: int,
 ) -> int:
@@ -283,6 +285,13 @@ def _move_until_stop(
         ):
             return best_position
 
+        if traveled >= max_travel:
+            raise RuntimeError(
+                f"Auto calibration could not find a hard stop for '{motor}' after traveling {traveled} ticks. "
+                "This motor may be continuous/full-turn, disconnected from a bounded linkage, or the "
+                "thresholds may be too strict."
+            )
+
         last_position = position
 
 
@@ -292,10 +301,6 @@ def _auto_recalibrate_feetech_motor(
     motor: str,
     cfg: RecalibrateMotorConfig,
 ) -> None:
-    existing_calibration = device.calibration[motor]
-    if _is_full_turn_motor(bus, motor, existing_calibration):
-        raise NotImplementedError(f"Auto calibration is not supported for full-turn motor '{motor}'.")
-
     # Conservative limits reduce impact if the motor hits a hard stop.
     if _read_optional_register(bus, "Torque_Limit", motor) is not None:
         bus.write("Torque_Limit", motor, 200, normalize=False)
@@ -313,6 +318,7 @@ def _auto_recalibrate_feetech_motor(
         position_epsilon=cfg.auto_position_epsilon,
         stall_samples=cfg.auto_stall_samples,
         min_travel=cfg.auto_min_travel,
+        max_travel=cfg.auto_max_travel,
         load_threshold=cfg.auto_load_threshold,
         current_threshold=cfg.auto_current_threshold,
     )
@@ -330,6 +336,7 @@ def _auto_recalibrate_feetech_motor(
         position_epsilon=cfg.auto_position_epsilon,
         stall_samples=cfg.auto_stall_samples,
         min_travel=cfg.auto_min_travel,
+        max_travel=cfg.auto_max_travel,
         load_threshold=cfg.auto_load_threshold,
         current_threshold=cfg.auto_current_threshold,
     )
