@@ -80,6 +80,7 @@ class RecalibrateMotorConfig:
     auto_load_threshold: int = 250
     auto_current_threshold: int = 120
     auto_safety_margin: int = 16
+    auto_debug: bool = False
 
     def __post_init__(self):
         if bool(self.teleop) == bool(self.robot):
@@ -239,6 +240,8 @@ def _move_until_stop(
     bus: Any,
     motor: str,
     *,
+    debug: bool,
+    debug_label: str,
     direction: int,
     start_position: int,
     step_size: int,
@@ -257,6 +260,22 @@ def _move_until_stop(
     last_position = start_position
     stalled_count = 0
     best_position = start_position
+
+    logger.info(
+        "[auto:%s] start motor=%s direction=%s start_position=%s step_size=%s min_travel=%s max_travel=%s "
+        "position_epsilon=%s stall_samples=%s load_threshold=%s current_threshold=%s",
+        debug_label,
+        motor,
+        direction,
+        start_position,
+        step_size,
+        min_travel,
+        max_travel,
+        position_epsilon,
+        stall_samples,
+        load_threshold,
+        current_threshold,
+    )
 
     while True:
         goal_position += direction * step_size
@@ -280,12 +299,61 @@ def _move_until_stop(
         at_current_limit = current is not None and abs(current) >= current_threshold
         no_longer_moving = moving == 0 and stalled_count >= stall_samples
 
+        if debug:
+            logger.info(
+                "[auto:%s] motor=%s goal=%s pos=%s traveled=%s load=%s current=%s moving=%s stalled=%s "
+                "meaningful_travel=%s at_load_limit=%s at_current_limit=%s no_longer_moving=%s",
+                debug_label,
+                motor,
+                goal_position,
+                position,
+                traveled,
+                load,
+                current,
+                moving,
+                stalled_count,
+                has_meaningful_travel,
+                at_load_limit,
+                at_current_limit,
+                no_longer_moving,
+            )
+
         if has_meaningful_travel and (
             stalled_count >= stall_samples or at_load_limit or at_current_limit or no_longer_moving
         ):
+            reasons = []
+            if stalled_count >= stall_samples:
+                reasons.append(f"stall_count={stalled_count}")
+            if at_load_limit:
+                reasons.append(f"load={load}")
+            if at_current_limit:
+                reasons.append(f"current={current}")
+            if no_longer_moving:
+                reasons.append(f"moving={moving}")
+            logger.info(
+                "[auto:%s] detected stop for motor=%s at pos=%s after traveled=%s because %s",
+                debug_label,
+                motor,
+                best_position,
+                traveled,
+                ", ".join(reasons),
+            )
             return best_position
 
         if traveled >= max_travel:
+            logger.warning(
+                "[auto:%s] failed to detect stop for motor=%s after traveled=%s goal=%s pos=%s load=%s "
+                "current=%s moving=%s stalled=%s",
+                debug_label,
+                motor,
+                traveled,
+                goal_position,
+                position,
+                load,
+                current,
+                moving,
+                stalled_count,
+            )
             raise RuntimeError(
                 f"Auto calibration could not find a hard stop for '{motor}' after traveling {traveled} ticks. "
                 "This motor may be continuous/full-turn, disconnected from a bounded linkage, or the "
@@ -308,9 +376,12 @@ def _auto_recalibrate_feetech_motor(
         bus.write("Protection_Current", motor, max(cfg.auto_current_threshold, 1), normalize=False)
 
     center = int(bus.read("Present_Position", motor, normalize=False))
+    logger.info("[auto] starting calibration for motor=%s from center=%s", motor, center)
     left_stop = _move_until_stop(
         bus,
         motor,
+        debug=cfg.auto_debug,
+        debug_label="left",
         direction=-1,
         start_position=center,
         step_size=cfg.auto_step_size,
@@ -325,10 +396,13 @@ def _auto_recalibrate_feetech_motor(
 
     bus.write("Goal_Position", motor, center, normalize=False)
     time.sleep(cfg.auto_settle_time_s)
+    logger.info("[auto] returned motor=%s to center=%s before sweeping right", motor, center)
 
     right_stop = _move_until_stop(
         bus,
         motor,
+        debug=cfg.auto_debug,
+        debug_label="right",
         direction=1,
         start_position=center,
         step_size=cfg.auto_step_size,
@@ -361,10 +435,11 @@ def _auto_recalibrate_feetech_motor(
     homing_offset = int(bus.set_half_turn_homings([motor])[motor])
 
     logger.info(
-        "Auto-calibrated %s: left_stop=%s right_stop=%s midpoint=%s present_midpoint=%s",
+        "Auto-calibrated %s: left_stop=%s right_stop=%s measured_span=%s midpoint=%s present_midpoint=%s",
         motor,
         left_stop,
         right_stop,
+        measured_span,
         midpoint,
         present_midpoint,
     )
